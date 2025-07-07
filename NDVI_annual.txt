@@ -1,0 +1,228 @@
+// Google Earth Engine script
+
+
+// NDVI calculation (mean, standard deviation and coefficient of variation) from Landsat 8-day composites
+
+// Load the region of interest
+var region = ee.FeatureCollection('projects/username/assets/region_boundaries_shapefile');
+
+// Load the NDVI composite collection from Landsat 8-day composite
+var landsat = ee.ImageCollection('LANDSAT/COMPOSITES/C02/T1_L2_8DAY_NDVI')
+    .filterBounds(region)
+    .filter(ee.Filter.date('1995-01-01', '2024-12-31'));
+
+// Load the land cover map
+var landCover = ee.Image('projects/username/assets/Land_cover_file').clip(region);
+var landCover1 = landCover.select([0]);
+
+// Function to mask out land cover types
+function maskUrbanSuburban(image) {
+  var urbanMask = landCover1.neq(0)  
+    .and(landCover1.neq(8))
+    .and(landCover1.neq(11))
+    .and(landCover1.neq(12))
+    .and(landCover1.neq(13))  
+    .and(landCover1.neq(14))  
+    .and(landCover1.neq(15))  
+    .and(landCover1.neq(16))  
+    .and(landCover1.neq(17))
+    .and(landCover1.neq(18))
+    .and(landCover1.neq(20))
+    .and(landCover1.neq(21)); 
+  return image.updateMask(urbanMask);
+}
+
+// Apply land cover mask
+var landsatProcessed = landsat.map(maskUrbanSuburban);
+
+// Function to apply 98th percentile filtering
+function maskByPercentiles(image, region) {
+  var percentiles = image.reduceRegion({
+    reducer: ee.Reducer.percentile([1, 99]),
+    geometry: region,
+    scale: 30,
+    maxPixels: 1e13
+  });
+  var p1 = ee.Number(percentiles.get('NDVI_p1'));
+  var p99 = ee.Number(percentiles.get('NDVI_p99'));
+  return image.updateMask(image.gte(p1).and(image.lte(p99)));
+}
+
+// Function to compute the annual mean NDVI composite
+function calculateNDVIStatistics(year) {
+  var startDate = ee.Date.fromYMD(year, 1, 1);
+  var endDate = ee.Date.fromYMD(year, 12, 31);
+  
+  // Get all 8-day NDVI images for the year and compute mean composite
+  var yearComposite = landsatProcessed
+    .filter(ee.Filter.date(startDate, endDate))
+    .select('NDVI')
+    .mean()
+    .clip(region);
+  
+  // Apply 98th percentile filtering
+  var maskedNDVI = maskByPercentiles(yearComposite, region);
+  
+  // Calculate statistics
+  var stats = maskedNDVI.reduceRegion({
+    reducer: ee.Reducer.mean()
+      .combine({ reducer2: ee.Reducer.stdDev(), sharedInputs: true })
+      .combine({ reducer2: ee.Reducer.minMax(), sharedInputs: true })
+      .combine({ reducer2: ee.Reducer.median(), sharedInputs: true }),
+    geometry: region,
+    scale: 30,
+    maxPixels: 1e13
+  });
+  
+  // Create a feature with statistics
+  return ee.Feature(null, {
+    'year': year,
+    'meanNDVI': stats.get('NDVI_mean'),
+    'stdDevNDVI': stats.get('NDVI_stdDev'),
+    'minNDVI': stats.get('NDVI_min'),
+    'maxNDVI': stats.get('NDVI_max'),
+    'medianNDVI': stats.get('NDVI_median')
+  });
+}
+
+// List of years from 1995 to 2024
+var years = ee.List.sequence(1995, 2024);
+
+// Map over the years to calculate statistics and return a list of ee.Feature
+var yearStats = years.map(function(year) {
+  return calculateNDVIStatistics(year);
+});
+
+// Create a FeatureCollection
+var statsTable = ee.FeatureCollection(yearStats);
+
+// Export the statistics table to Google Drive
+Export.table.toDrive({
+  collection: statsTable,
+  description: 'NDVI_Annual_1995_2024',
+  fileFormat: 'CSV',
+  folder: 'FOLDER'
+});
+
+// Print the statistics table to the console
+//print(statsTable);
+
+// Histograms for NDVI statistics
+var chart = ui.Chart.feature.byFeature({
+  features: statsTable,
+  xProperty: 'year',
+  yProperties: ['meanNDVI', 'minNDVI', 'maxNDVI', 'stdDevNDVI']
+})
+.setChartType('ColumnChart')
+.setOptions({
+  title: 'NDVI Annual statistics (1991-2024)',
+  hAxis: {title: 'Year'},
+  vAxis: {title: 'NDVI Value', minValue: -1, maxValue: 1},
+  series: {
+    0: {color: 'green', label: 'Mean NDVI'},
+    1: {color: 'blue', label: 'Min NDVI'},
+    2: {color: 'red', label: 'Max NDVI'},
+    3: {color: 'purple', label: 'StdDev NDVI'}
+  },
+  legend: {position: 'right'}
+});
+
+// Add a raster for a given year
+var ndvi1995 = landsatProcessed.filterDate('1995-01-01', '1995-12-31')
+                              .select('NDVI')
+                              .mean()
+                              .clip(region);
+
+// Display the raster image
+Map.centerObject(region, 10); // Zoom to the region of interest
+Map.addLayer(ndvi1995, {min: -1, max: 1, palette: ['blue', 'green', 'yellow', 'red']}, 'NDVI 1995');
+
+// Create a histogram of the NDVI values
+var histogram = ui.Chart.image.histogram({
+  image: ndvi1995,
+  region: region,
+  scale: 30,
+  maxBuckets: 50,  // Number of buckets
+  minBucketWidth: 0.01  // Width of each bucket
+}).setOptions({
+  title: 'Histogram of 1995 NDVI values',
+  hAxis: {title: 'NDVI Value', minValue: -1, maxValue: 1},
+  vAxis: {title: 'Frequency'}
+});
+
+// Export the 1995 NDVI raster as a GeoTIFF file
+Export.image.toDrive({
+  image: ndvi1995,
+  description: 'NDVI_1995',
+  folder: 'FOLDER',
+  fileNamePrefix: 'NDVI_1995',
+  region: region.geometry(), 
+  scale: 30,
+  maxPixels: 1e13, 
+  crs: 'EPSG:4326'
+});
+
+// Calculate the standard deviation for NDVI from 1995-2024
+var landsat = ee.ImageCollection('LANDSAT/COMPOSITES/C02/T1_L2_8DAY_NDVI')
+    .filterBounds(region)
+    .filter(ee.Filter.date('1995-01-01', '2024-12-31'));
+
+var landsatProcessed = landsat.map(maskUrbanSuburban);
+
+// Function to calculate the standard deviation for each year
+function calculateStandardDeviation() {
+  var stdDevImage = landsatProcessed
+    .select('NDVI')
+    .reduce(ee.Reducer.stdDev())  // Calculate standard deviation
+    .clip(region);
+  return stdDevImage;
+}
+
+// Calculate the standard deviation for the entire period
+var stdDevImage = calculateStandardDeviation();
+
+// Map the standard deviation image
+Map.centerObject(region, 10);
+Map.addLayer(stdDevImage, {min: 0, max: 0.3, palette: ['blue', 'green', 'yellow', 'red']}, 'NDVI Standard Deviation (1995-2024)');
+
+// Export the standard deviation image as a GeoTIFF
+Export.image.toDrive({
+  image: stdDevImage,
+  description: 'NDVI_STD_1995_2024_grassland',
+  folder: 'FOLDER',
+  fileNamePrefix: 'NDVI_STD_1995_2024_grassland',
+  region: region.geometry(),
+  scale: 30,
+  maxPixels: 1e13,
+  crs: 'EPSG:4326'
+});
+
+// Function to calculate the mean NDVI over the period
+function calculateMeanNDVI() {
+  var meanImage = landsatProcessed
+    .select('NDVI')
+    .reduce(ee.Reducer.mean())  // Compute mean NDVI
+    .clip(region);
+  return meanImage;
+}
+
+// Compute mean NDVI over 1995-2024
+var meanNDVIImage = calculateMeanNDVI();
+
+// Compute Coefficient of Variation (CV = stdDev / mean)
+var cvImage = stdDevImage.divide(meanNDVIImage).multiply(100); // Convert to percentage
+
+// Map the CV image
+Map.addLayer(cvImage, {min: 0, max: 50, palette: ['blue', 'green', 'yellow', 'red']}, 'NDVI Coefficient of Variation (1995-2024)');
+
+// Export the CV raster as a GeoTIFF
+Export.image.toDrive({
+  image: cvImage,
+  description: 'NDVI_CV_1995_2024',
+  folder: 'FOLDER',
+  fileNamePrefix: 'NDVI_CV_1995_2024',
+  region: region.geometry(),
+  scale: 30,
+  maxPixels: 1e13,
+  crs: 'EPSG:4326'
+});

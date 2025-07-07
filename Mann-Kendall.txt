@@ -1,0 +1,171 @@
+import os
+import numpy as np
+import rasterio
+from scipy.stats import kendalltau
+import pandas as pd
+
+# Define directory 
+raster_dir = os.path.expanduser("PATH/TO/FILES")
+
+# Function to perform the Mann-Kendall test
+def mk_test(time_series):
+    tau, p_value = kendalltau(range(len(time_series)), time_series)
+    return tau, p_value 
+
+# List of raster files
+raster_files = [os.path.join(raster_dir, f'NDVI_{year}.tif') for year in range(1995, 2024)]
+
+# Open the first raster to get metadata and dimensions
+with rasterio.open(raster_files[0]) as src:
+    profile = src.profile.copy()  # use copy to avoid accidental mutations
+    transform = src.transform
+    crs = src.crs
+    nodata_value = -9999
+
+# Read raster data for each year
+raster_data = []
+for file in raster_files:
+    with rasterio.open(file) as src:
+        data = src.read(1, masked=True).astype(np.float32)
+        raster_data.append(data)
+
+# Convert list of rasters to a numpy array (time x rows x cols)
+raster_data = np.array(raster_data)
+
+# Get raster dimensions
+time, rows, cols = raster_data.shape
+
+# Create empty arrays for results
+tau_array = np.full((rows, cols), np.nan, dtype=np.float32)
+p_array = np.full((rows, cols), np.nan, dtype=np.float32)
+
+# Perform Mann-Kendall test on each pixel
+for r in range(rows):
+    for c in range(cols):
+        # Extract time series for this pixel
+        pixel_values = raster_data[:, r, c]
+
+        # Mask NoData and zero values
+        #valid_values = pixel_values[(~np.isnan(pixel_values)) & (pixel_values != 0)]
+        valid_idx = (~np.isnan(pixel_values)) & (pixel_values != 0)
+        years = np.arange(1995, 2024)[valid_idx]
+        values = pixel_values[valid_idx]
+        
+        # Only perform test if there are at least two valid values
+        if len(values) > 1:
+            tau, p_value = mk_test(values)
+            tau_array[r, c] = tau
+            p_array[r, c] = p_value
+
+# Define significance threshold
+significance_level = 0.05
+
+# Mask non-significant tau values
+tau_significant = np.where(p_array <= significance_level, tau_array, nodata_value)
+
+# Create a raster for non-significant p-values that were masked
+p_masked = np.where(p_array > significance_level, p_array, nodata_value)
+
+# Update the profile for output
+profile.update(
+    dtype=rasterio.float32,
+    count=1,
+    nodata=nodata_value,
+    transform=transform,  # ensure same geolocation
+    crs=crs               # ensure same coordinate reference system
+)
+
+# Define output directory
+output_dir = os.path.join(raster_dir, 'MK_Results')
+os.makedirs(output_dir, exist_ok=True)
+
+# Replace NaN values with the nodata_value
+tau_array_with_nodata = np.where(np.isnan(tau_array), nodata_value, tau_array)
+p_array_with_nodata = np.where(np.isnan(p_array), nodata_value, p_array)
+
+# Save Tau values as raster
+tau_filename = os.path.join(output_dir, 'NDVI_tau.tif')
+with rasterio.open(tau_filename, "w", **profile) as dst:
+    dst.write(tau_array_with_nodata, 1)  
+
+# Save p-values as raster
+p_filename = os.path.join(output_dir, 'NDVI_p_value.tif')
+with rasterio.open(p_filename, "w", **profile) as dst:
+    dst.write(p_array_with_nodata, 1)
+
+# Save non-significant Tau values as raster
+tau_masked_filename = os.path.join(output_dir, 'NDVI_tau_significant.tif')
+with rasterio.open(tau_masked_filename, "w", **profile) as dst:
+    dst.write(tau_significant, 1)
+
+# Save non-significant p-values as raster
+p_masked_filename = os.path.join(output_dir, 'NDVI_p_masked.tif')
+with rasterio.open(p_masked_filename, "w", **profile) as dst:
+    dst.write(p_masked, 1)
+
+print(f"Saved results in {output_dir}:")
+print(f"- NDVI_tau.tif")
+print(f"- NDVI_p_value.tif")
+print(f"- NDVI_tau_significant.tif")
+print(f"- NDVI_p_masked.tif")
+
+# Function to count valid, positive, and negative tau pixels
+def count_pixels(tau_array, p_array, nodata_value, significance_level):
+    valid_pixels = tau_array != nodata_value
+    positive_pixels = (tau_array > 0) & valid_pixels
+    negative_pixels = (tau_array < 0) & valid_pixels
+
+    significant_mask = (p_array <= significance_level) & valid_pixels
+    sig_positive_pixels = positive_pixels & significant_mask
+    sig_negative_pixels = negative_pixels & significant_mask
+
+    return (
+        np.sum(valid_pixels),
+        np.sum(positive_pixels),
+        np.sum(negative_pixels),
+        np.sum(sig_positive_pixels),
+        np.sum(sig_negative_pixels)
+    )
+
+# Updated dictionary to store pixel counts
+pixel_counts = {
+    "Raster": [],
+    "Valid_Pixels": [],
+    "Positive_Tau": [],
+    "Negative_Tau": [],
+    "Significant_Positive_Tau": [],
+    "Significant_Negative_Tau": []
+}
+
+# Define exported rasters
+exported_rasters = {
+    'NDVI_tau.tif': tau_array_with_nodata,
+    'NDVI_p_value.tif': p_array_with_nodata,
+    'NDVI_tau_significant.tif': tau_significant,
+    'NDVI_p_masked.tif': p_masked
+}
+
+# Process each tau raster file (skip p-value-only rasters)
+for filename, raster_array in exported_rasters.items():
+    is_tau = "tau" in filename.lower()
+    if is_tau:
+        valid, pos_tau, neg_tau, sig_pos, sig_neg = count_pixels(
+            raster_array, p_array_with_nodata, nodata_value, significance_level
+        )
+    else:
+        valid = np.sum(raster_array != nodata_value)
+        pos_tau = neg_tau = sig_pos = sig_neg = "N/A"
+
+    pixel_counts["Raster"].append(filename)
+    pixel_counts["Valid_Pixels"].append(valid)
+    pixel_counts["Positive_Tau"].append(pos_tau)
+    pixel_counts["Negative_Tau"].append(neg_tau)
+    pixel_counts["Significant_Positive_Tau"].append(sig_pos)
+    pixel_counts["Significant_Negative_Tau"].append(sig_neg)
+
+# Convert to DataFrame and save as CSV
+csv_filename = os.path.join(output_dir, "pixel_counts.csv")
+df = pd.DataFrame(pixel_counts)
+df.to_csv(csv_filename, index=False)
+
+print(f"- pixel_counts.csv")

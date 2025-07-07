@@ -1,0 +1,139 @@
+// Google Earth Engine script
+
+
+// Land cover change analysis from two Land Cover Maps with 25m of resolution
+
+// Load land cover maps
+var img90_native = ee.Image('projects/username/assets/LCM_1_25m');
+var img23_native = ee.Image('projects/username/assets/LCM_2_25m');
+
+// Resample land cover maps to 30m
+var lc90 = img90_native
+             .select('b1')
+             .toInt()                               
+             .reproject({
+               crs: img90_native.projection(),      // EPSG:27700
+               scale: 30
+             });
+
+var lc23 = img23_native
+             .select('b1')
+             .toInt()
+             .reproject({
+               crs: img90_native.projection(),      // EPSG:27700
+               scale: 30
+             });
+
+// Align rasters
+var aoi = lc90.geometry().intersection(lc23.geometry(), ee.ErrorMargin(1));
+lc90 = lc90.clip(aoi);
+lc23 = lc23.clip(aoi);
+
+// Create mask for non-target land cover categories
+var maskNoData = lc90.neq(0); // 1 where value ≠ 0
+lc90 = lc90.updateMask(maskNoData);
+lc23 = lc23.updateMask(maskNoData);
+
+// Define built-up land cover codes
+var mask = ee.List([0, 8, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21]);
+
+// Detect change
+var change = lc23.neq(lc90).rename('change');
+
+// Exclude non-target land cover categories from change analysis
+var built = ee.Image.constant(mask)
+               .eq(lc90)
+               .reduce('max');
+var changeNoBuilt = change.updateMask(built.not());
+
+// Load the boundary asset
+var boundaries = ee.FeatureCollection('projects/username/assets/boundaries_shapefile');
+
+// Clip the change mask to the boundaries
+var changeClipped = changeNoBuilt.clip(boundaries);
+
+// Mapping
+// Add a white background
+var whiteBackground = ee.Image.constant(1).visualize({palette: ['white']});
+Map.addLayer(whiteBackground, {}, 'Blank background');
+
+// Center map and add visual layers
+Map.centerObject(boundaries, 7);
+
+Map.addLayer(changeClipped, 
+             {min: 0, max: 1, palette: ['lightgrey', 'darkred']}, 
+             'Land cover change 1990-2023');
+
+// Masking Mann-Kendall raster with Land cover change
+var new_asset_layer = ee.Image('projects/username/assets/NDVI_tau_file');
+
+// Mask the new asset layer with "no change" (change == 0)
+var noChangeMask = new_asset_layer.updateMask(changeClipped.eq(0));
+
+// Mask the new asset layer with "change" (change == 1)
+var changeMask = new_asset_layer.updateMask(changeClipped.eq(1));
+
+// Export the clipped land cover change mask as an asset (GeoTIFF)
+Export.image.toAsset({
+  image: changeClipped,
+  description: 'Land_cover_change_1990_2023_30m_withNoData',
+  assetId: 'projects/username/assets/Land_cover_change_YEAR_YEAR',
+  region: boundaries,
+  scale: 30,
+  maxPixels: 1e13,
+  crs: 'EPSG:27700',
+});
+
+// Export the two masked NDVI rasters as GeoTIFFs
+Export.image.toAsset({
+  image: noChangeMask,
+  description: 'FILE',
+  region: boundaries,
+  scale: 30,
+  maxPixels: 1e13
+});
+
+Export.image.toAsset({
+  image: changeMask,
+  description: 'FILE',
+  region: boundaries,
+  scale: 30,
+  maxPixels: 1e13
+});
+
+// Visualize NDVI masks
+Map.addLayer(noChangeMask, 
+             {min: 0, max: 1, palette: ['white', 'blue']}, 
+             'No Land cover change');
+
+Map.addLayer(changeMask, 
+             {min: 0, max: 1, palette: ['white', 'red']}, 
+             'Land cover change');
+
+// Calculate number of pixels with change == 1
+var changeCount = changeClipped.reduceRegion({
+  reducer: ee.Reducer.sum(), 
+  geometry: boundaries, 
+  scale: 30,
+  maxPixels: 1e13
+}).get('change');
+
+// Calculate total number of valid (masked) pixels
+var totalCount = changeClipped.updateMask(maskNoData).reduceRegion({
+  reducer: ee.Reducer.count(),
+  geometry: boundaries,
+  scale: 30,
+  maxPixels: 1e13
+}).get('change');
+
+// Calculate number of pixels with no change
+var noChangeCount = ee.Number(totalCount).subtract(ee.Number(changeCount));
+
+// Print pixel counts
+print('Number of changed pixels =', changeCount);
+print('Number of unchanged pixels =', noChangeCount);
+print('Total number of pixels =', totalCount);
+
+// Calculate and print ratio
+var ratioChange = ee.Number(changeCount).divide(ee.Number(totalCount)).multiply(100);
+print('Land cover change ratio (%) =', ratioChange);

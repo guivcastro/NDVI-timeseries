@@ -1,0 +1,141 @@
+#### R script
+
+# Install packages
+install.packages("forcats", dependencies = TRUE)
+install.packages("readr", dependencies = TRUE)
+install.packages("ggplot2", dependencies = TRUE)
+install.packages("dplyr", dependencies = TRUE)
+install.packages("tidyr", dependencies = TRUE)
+
+# Load libraries
+library(ggplot2)
+library(dplyr)
+library(readr)
+library(tidyr)
+library(forcats)
+
+# Define directory
+csv_directory <- "PATH/TO/FILES"
+
+# List and sort CSV files
+csv_files <- list.files(csv_directory, pattern = "\\.csv$", full.names = TRUE)
+csv_files <- sort(csv_files)
+
+# Check if there are CSV files
+if (length(csv_files) == 0) {
+ cat("No CSV files found in the directory.\n")
+ quit()
+}
+
+# Initialize a list to store data
+all_data <- list()
+global_max <- NA  # Avoid using -Inf initially
+
+for (file in csv_files) {
+ tryCatch({
+  df <- read_csv(file)
+  # Ensure required columns exist
+  if (!all(c("x", "y", "value") %in% colnames(df))) {
+   warning(paste("Skipping", file, "- Missing required columns."))
+   next
+  }
+  # Convert 'value' column to numeric and drop NAs
+  df$value <- suppressWarnings(as.numeric(df$value))
+  df <- df %>% filter(!is.na(value))
+  # Skip files with no valid 'value' data
+  if (nrow(df) == 0) {
+   warning(paste("Skipping", file, "- 'value' column is empty after conversion."))
+   next
+  }
+  # Add a column for the source file name
+  df$source <- basename(file)
+  # Append data to the list
+  all_data[[length(all_data) + 1]] <- df
+  # Update global max value
+  global_max <- max(global_max, max(df$value, na.rm = TRUE), na.rm = TRUE)
+ }, error = function(e) {
+  warning(paste("Error processing", file, ":", e$message))
+ })
+}
+
+# Check if any valid data exists
+if (length(all_data) > 0) {
+ # Combine all data into a single data frame
+ combined_df <- bind_rows(all_data)
+ # Manually remove extreme outliers
+ filtered_df <- combined_df %>% filter(value <= 110)
+ # Extract unique sources and sort them
+ unique_sources <- sort(unique(filtered_df$source))
+ # Define custom labels for land cover names
+ custom_labels <- c("All landscape", "Arable", "Broadleaved woodland", "Conifer woodland", "Grassland", "Heather")
+ # Ensure the number of labels matches the number of unique sources
+ if (length(unique_sources) != length(custom_labels)) {
+  stop("Mismatch between the number of unique sources and custom labels.")
+ }
+ # Create a mapping of original file names to land cover labels
+ label_mapping <- setNames(custom_labels, unique_sources)
+ # Apply relabeled names correctly
+ filtered_df$source <- factor(filtered_df$source, levels = unique_sources, labels = custom_labels)
+ # Define distinct colors for each land cover type
+ custom_colors <- c("#A0B5C4","#897044","#00734C", "#ABCD66", "#EDC327", "#894444")
+ # Ensure enough colors are provided
+ if (length(custom_colors) != length(custom_labels)) {
+  warning("Not enough custom colors provided; some will be duplicated.")
+  custom_colors <- rep(custom_colors, length.out = length(custom_labels))
+ }
+ p <- ggplot(filtered_df, aes(x = source, y = value, fill = source)) +
+  geom_violin(trim = FALSE, width = 1.1, alpha = 0.5, color = NA) + 
+  geom_boxplot(width = 0.15, outlier.shape = 16, outlier.size = 0.5, 
+               outlier.colour = "darkgrey", color = "black", 
+               fill = "white", alpha = 0.8) +
+  scale_fill_manual(values = setNames(custom_colors, custom_labels)) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0.5, face = "bold"),
+        axis.text.y = element_text(size = 20),
+        legend.position = "none",
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(), 
+        panel.background = element_blank(),
+        axis.line = element_blank(),
+        axis.ticks = element_blank()) +
+  labs(x = "Land cover", y = "Standard deviation") +
+  scale_y_continuous(limits = c(0, max(filtered_df$value, na.rm = TRUE)), 
+                     breaks = seq(0, max(filtered_df$value, na.rm = TRUE), by = 10))
+ # Save the plot as an image
+ output_path <- file.path(csv_directory, "NDVI_violin_boxplot_filtered.png")
+ ggsave(output_path, plot = p, dpi = 300, width = max(10, length(csv_files) * 1.5), height = 6)
+ # Show the plot
+ print(p)
+ cat("Plot saved as", output_path, "\n")
+} else {
+ cat("No valid data to plot.\n")
+}
+
+p <- ggplot(filtered_df, aes(x = value, fill = source, color = source)) +
+ geom_density(alpha = 1) +  # Density plot with some transparency
+ scale_fill_manual(values = setNames(custom_colors, custom_labels)) + 
+ scale_color_manual(values = setNames(custom_colors, custom_labels)) +
+ theme_minimal() +
+ theme(
+  axis.text.x = element_text(angle = 0, hjust = 0.5, vjust = 0.5, face = "bold"), 
+  axis.text.y = element_text(size = 12),
+  legend.position = "none", 
+  panel.grid.major = element_blank(),  
+  panel.grid.minor = element_blank(),  
+  panel.background = element_blank(),  
+  axis.line = element_blank(),
+  axis.ticks = element_blank()
+ ) + 
+ labs(x = "Local Moran's I", y = "Density", fill = "Land cover", color = "Land cover") + 
+ scale_x_continuous(limits = c(-10, 80)) +  # Set x-axis range
+ facet_wrap(~source, scales = "free_y")  # Create separate plots for each land cover type
+
+# Save the plot as an .png
+#output_path <- file.path(csv_directory, "NDVI_distribution_by_land_cover.png")
+#ggsave(output_path, plot = p, dpi = 300, width = 10, height = 6)
+
+# Plot
+print(p)
+
+
+
