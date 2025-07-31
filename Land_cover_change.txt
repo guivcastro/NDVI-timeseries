@@ -81,7 +81,7 @@ Export.image.toAsset({
   region: boundaries,
   scale: 30,
   maxPixels: 1e13,
-  crs: 'EPSG:27700',
+  crs: 'EPSG:32631',
 });
 
 // Export the two masked NDVI rasters as GeoTIFFs
@@ -90,7 +90,8 @@ Export.image.toAsset({
   description: 'FILE',
   region: boundaries,
   scale: 30,
-  maxPixels: 1e13
+  maxPixels: 1e13,
+  crs: 'EPSG:32631'
 });
 
 Export.image.toAsset({
@@ -98,7 +99,8 @@ Export.image.toAsset({
   description: 'FILE',
   region: boundaries,
   scale: 30,
-  maxPixels: 1e13
+  maxPixels: 1e13,
+  crs: 'EPSG:32631'
 });
 
 // Visualize NDVI masks
