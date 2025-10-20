@@ -139,3 +139,65 @@ print('Total number of pixels =', totalCount);
 // Calculate and print ratio
 var ratioChange = ee.Number(changeCount).divide(ee.Number(totalCount)).multiply(100);
 print('Land cover change ratio (%) =', ratioChange);
+
+// Proportion of changes per land cover type
+var classes = ee.List.sequence(1, 21); // adjust according to your dataset
+
+// Make a mask for pixels that changed
+var changeMask = lc23.neq(lc90);
+
+// Function to calculate change per class
+var changePerClass = classes.map(function(c) {
+  c = ee.Number(c);
+  
+  // Mask pixels of the given class in 1990
+  var classMask = lc90.eq(c).and(changeMask);
+  
+  // Count pixels
+  var count = classMask.reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: boundaries,
+    scale: 30,
+    maxPixels: 1e13
+  }).get('b1');
+  
+  return ee.Dictionary({
+    'class_1990': c,
+    'changed_pixels': count
+  });
+});
+
+print('Change per 1990 class', changePerClass);
+
+// Define list of classes (adjust as needed)
+var classes = ee.List.sequence(1, 21);
+
+// Define change mask (pixels that changed between 1990 and 2023)
+var changeMask = lc23.neq(lc90);
+
+// Function to calculate change per 1990 class
+var changePerClass = classes.map(function(c) {
+  c = ee.Number(c);
+  
+  // Mask pixels of the given class in 1990
+  var classMask = lc90.eq(c).and(changeMask);
+  
+  // Count changed pixels within boundaries
+  var count = classMask.reduceRegion({
+    reducer: ee.Reducer.sum(),
+    geometry: boundaries,
+    scale: 30,
+    maxPixels: 1e13
+  }).get('b1');
+  
+  return ee.Feature(null, {
+    'class_1990': c,
+    'changed_pixels': ee.Number(count)
+  });
+});
+
+// Convert list to FeatureCollection
+var changeFC = ee.FeatureCollection(changePerClass);
+
+// Print to console (for inspection)
+print('Change per 1990 class', changeFC);
