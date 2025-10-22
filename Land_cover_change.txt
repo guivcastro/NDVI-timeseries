@@ -4,33 +4,27 @@
 // Land cover change analysis from two Land Cover Maps with 25m of resolution
 
 // Load land cover maps
-var img90_native = ee.Image('projects/username/assets/LCM_1_25m');
-var img23_native = ee.Image('projects/username/assets/LCM_2_25m');
+var img90_native = ee.Image('PATH/TO/FILE');
+var img23_native = ee.Image('PATH/TO/FILE');
 
 // Resample land cover maps to 30m
-var lc90 = img90_native
-             .select('b1')
-             .toInt()                               
-             .reproject({
-               crs: img90_native.projection(),      // EPSG:27700
-               scale: 30
-             });
+var lc90 = img90_native.select('b1').toInt().reproject({
+  crs: img90_native.projection(),
+  scale: 30
+});
 
-var lc23 = img23_native
-             .select('b1')
-             .toInt()
-             .reproject({
-               crs: img90_native.projection(),      // EPSG:27700
-               scale: 30
-             });
+var lc23 = img23_native.select('b1').toInt().reproject({
+  crs: img90_native.projection(),
+  scale: 30
+});
 
 // Align rasters
 var aoi = lc90.geometry().intersection(lc23.geometry(), ee.ErrorMargin(1));
 lc90 = lc90.clip(aoi);
 lc23 = lc23.clip(aoi);
 
-// Create mask for non-target land cover categories
-var maskNoData = lc90.neq(0); // 1 where value ≠ 0
+// Mask non-target land cover categories
+var maskNoData = lc90.neq(0);
 lc90 = lc90.updateMask(maskNoData);
 lc23 = lc23.updateMask(maskNoData);
 
@@ -41,53 +35,35 @@ var mask = ee.List([0, 8, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21]);
 var change = lc23.neq(lc90).rename('change');
 
 // Exclude non-target land cover categories from change analysis
-var built = ee.Image.constant(mask)
-               .eq(lc90)
-               .reduce('max');
+var built = ee.Image.constant(mask).eq(lc23).reduce('max');
 var changeNoBuilt = change.updateMask(built.not());
 
-// Load the boundary asset
-var boundaries = ee.FeatureCollection('projects/username/assets/boundaries_shapefile');
+// Load boundaries
+var boundaries = ee.FeatureCollection('PATH/TO/FILE');
 
-// Clip the change mask to the boundaries
+// Clip change mask to boundaries
 var changeClipped = changeNoBuilt.clip(boundaries);
 
-// Mapping
-// Add a white background
-var whiteBackground = ee.Image.constant(1).visualize({palette: ['white']});
-Map.addLayer(whiteBackground, {}, 'Blank background');
-
-// Center map and add visual layers
-Map.centerObject(boundaries, 7);
-
-Map.addLayer(changeClipped, 
-             {min: 0, max: 1, palette: ['lightgrey', 'darkred']}, 
-             'Land cover change 1990-2023');
-
-// Masking Mann-Kendall raster with Land cover change
-var new_asset_layer = ee.Image('projects/username/assets/NDVI_tau_file');
-
-// Mask the new asset layer with "no change" (change == 0)
+// Mask NDVI asset
+var new_asset_layer = ee.Image('PATH/TO/FILE');
 var noChangeMask = new_asset_layer.updateMask(changeClipped.eq(0));
-
-// Mask the new asset layer with "change" (change == 1)
 var changeMask = new_asset_layer.updateMask(changeClipped.eq(1));
 
-// Export the clipped land cover change mask as an asset (GeoTIFF)
+// Export rasters
+
 Export.image.toAsset({
   image: changeClipped,
-  description: 'Land_cover_change_1990_2023_30m_withNoData',
-  assetId: 'projects/username/assets/Land_cover_change_YEAR_YEAR',
+  description: 'Land_cover_change_1990_2023_30m',
+  assetId: 'path/',
   region: boundaries,
   scale: 30,
   maxPixels: 1e13,
-  crs: 'EPSG:32631',
+  crs: 'EPSG:32631'
 });
 
-// Export the two masked NDVI rasters as GeoTIFFs
 Export.image.toAsset({
   image: noChangeMask,
-  description: 'FILE',
+  description: 'LC_no_change_30m',
   region: boundaries,
   scale: 30,
   maxPixels: 1e13,
@@ -96,93 +72,19 @@ Export.image.toAsset({
 
 Export.image.toAsset({
   image: changeMask,
-  description: 'FILE',
+  description: 'LC_change_30m',
   region: boundaries,
   scale: 30,
   maxPixels: 1e13,
   crs: 'EPSG:32631'
 });
 
-// Visualize NDVI masks
-Map.addLayer(noChangeMask, 
-             {min: 0, max: 1, palette: ['white', 'blue']}, 
-             'No Land cover change');
+// Calculate change per land cover class and export csv
 
-Map.addLayer(changeMask, 
-             {min: 0, max: 1, palette: ['white', 'red']}, 
-             'Land cover change');
-
-// Calculate number of pixels with change == 1
-var changeCount = changeClipped.reduceRegion({
-  reducer: ee.Reducer.sum(), 
-  geometry: boundaries, 
-  scale: 30,
-  maxPixels: 1e13
-}).get('change');
-
-// Calculate total number of valid (masked) pixels
-var totalCount = changeClipped.updateMask(maskNoData).reduceRegion({
-  reducer: ee.Reducer.count(),
-  geometry: boundaries,
-  scale: 30,
-  maxPixels: 1e13
-}).get('change');
-
-// Calculate number of pixels with no change
-var noChangeCount = ee.Number(totalCount).subtract(ee.Number(changeCount));
-
-// Print pixel counts
-print('Number of changed pixels =', changeCount);
-print('Number of unchanged pixels =', noChangeCount);
-print('Total number of pixels =', totalCount);
-
-// Calculate and print ratio
-var ratioChange = ee.Number(changeCount).divide(ee.Number(totalCount)).multiply(100);
-print('Land cover change ratio (%) =', ratioChange);
-
-// Proportion of changes per land cover type
-var classes = ee.List.sequence(1, 21); // adjust according to your dataset
-
-// Make a mask for pixels that changed
-var changeMask = lc23.neq(lc90);
-
-// Function to calculate change per class
-var changePerClass = classes.map(function(c) {
-  c = ee.Number(c);
-  
-  // Mask pixels of the given class in 1990
-  var classMask = lc90.eq(c).and(changeMask);
-  
-  // Count pixels
-  var count = classMask.reduceRegion({
-    reducer: ee.Reducer.sum(),
-    geometry: boundaries,
-    scale: 30,
-    maxPixels: 1e13
-  }).get('b1');
-  
-  return ee.Dictionary({
-    'class_1990': c,
-    'changed_pixels': count
-  });
-});
-
-print('Change per 1990 class', changePerClass);
-
-// Define list of classes (adjust as needed)
 var classes = ee.List.sequence(1, 21);
-
-// Define change mask (pixels that changed between 1990 and 2023)
-var changeMask = lc23.neq(lc90);
-
-// Function to calculate change per 1990 class
 var changePerClass = classes.map(function(c) {
   c = ee.Number(c);
-  
-  // Mask pixels of the given class in 1990
-  var classMask = lc90.eq(c).and(changeMask);
-  
-  // Count changed pixels within boundaries
+  var classMask = lc90.eq(c).and(changeClipped.eq(1));
   var count = classMask.reduceRegion({
     reducer: ee.Reducer.sum(),
     geometry: boundaries,
@@ -196,8 +98,11 @@ var changePerClass = classes.map(function(c) {
   });
 });
 
-// Convert list to FeatureCollection
 var changeFC = ee.FeatureCollection(changePerClass);
 
-// Print to console (for inspection)
-print('Change per 1990 class', changeFC);
+Export.table.toDrive({
+  collection: changeFC,
+  description: 'LC_change_1990_class',
+  fileFormat: 'CSV'
+});
+
