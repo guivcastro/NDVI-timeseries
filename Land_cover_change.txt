@@ -4,57 +4,68 @@
 // Land cover change analysis from two Land Cover Maps with 25m of resolution
 
 // Load land cover maps
-var img90_native = ee.Image('PATH/TO/FILE');
-var img23_native = ee.Image('PATH/TO/FILE');
+var img90_native = ee.Image('path/to/file');
+var img23_native = ee.Image('path/to/file');
 
-// Resample land cover maps to 30m
-var lc90 = img90_native.select('b1').toInt().reproject({
-  crs: img90_native.projection(),
-  scale: 30
-});
+// Rename bands
+var lc90 = img90_native.select('b1').rename('lc90').toInt();
+var lc23 = img23_native.select('b1').rename('lc23').toInt();
 
-var lc23 = img23_native.select('b1').toInt().reproject({
-  crs: img90_native.projection(),
-  scale: 30
-});
+// Resample to 30m & Align
+lc90 = lc90.reproject({crs: lc90.projection(), scale: 30});
+lc23 = lc23.reproject({crs: lc90.projection(), scale: 30});
 
-// Align rasters
+// Define AOI as intersection of both rasters
 var aoi = lc90.geometry().intersection(lc23.geometry(), ee.ErrorMargin(1));
 lc90 = lc90.clip(aoi);
 lc23 = lc23.clip(aoi);
 
-// Mask non-target land cover categories
-var maskNoData = lc90.neq(0);
+// Mask No-Data Pixels
+var maskNoData = lc90.neq(0); // pixels ≠ 0
 lc90 = lc90.updateMask(maskNoData);
 lc23 = lc23.updateMask(maskNoData);
 
-// Define built-up land cover codes
-var mask = ee.List([0, 8, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21]);
+// Mask land cover classes
+var builtUpCodes = ee.List([0, 8, 11, 12, 13, 14, 15, 16, 17, 18, 20, 21]);
+var builtMask = lc23.remap(builtUpCodes, ee.List.repeat(1, builtUpCodes.length()), 0);
+lc90 = lc90.updateMask(builtMask.not());
+lc23 = lc23.updateMask(builtMask.not());
 
-// Detect change
+// Filter for land cover classes of interest
+var ndviClasses = ee.List([1,2,3,4,5,6,7,9,10]);
+var ndviMask = lc90.remap(ndviClasses, ee.List.repeat(1, ndviClasses.length()), 0);
+lc90 = lc90.updateMask(ndviMask);
+lc23 = lc23.updateMask(ndviMask);
+
+// Detect land cover changes
 var change = lc23.neq(lc90).rename('change');
 
-// Exclude non-target land cover categories from change analysis
-var built = ee.Image.constant(mask).eq(lc23).reduce('max');
-var changeNoBuilt = change.updateMask(built.not());
-
 // Load boundaries
-var boundaries = ee.FeatureCollection('PATH/TO/FILE');
+var boundaries = ee.FeatureCollection('path/to/file');
+change = change.clip(boundaries);
 
-// Clip change mask to boundaries
-var changeClipped = changeNoBuilt.clip(boundaries);
+// Visualize land cover changes
+Map.centerObject(boundaries, 7);
+Map.addLayer(ee.Image.constant(1), {palette:['white']}, 'Background');
+Map.addLayer(change, {min:0, max:1, palette:['lightgrey','darkred']}, 'Land cover change 1990-2023');
 
-// Mask NDVI asset
-var new_asset_layer = ee.Image('PATH/TO/FILE');
-var noChangeMask = new_asset_layer.updateMask(changeClipped.eq(0));
-var changeMask = new_asset_layer.updateMask(changeClipped.eq(1));
+// Load MK Tau raster
+var ndviTau = ee.Image('path/to/file')
+                .reproject({crs: lc90.projection(), scale: 30})
+                .updateMask(ndviMask);
+
+// Mask NDVI Tau by change and no-change
+var ndviNoChange = ndviTau.updateMask(change.eq(0));
+var ndviChange = ndviTau.updateMask(change.eq(1));
+
+Map.addLayer(ndviNoChange, {min:0, max:1, palette:['white','blue']}, 'NDVI Tau - No Change');
+Map.addLayer(ndviChange, {min:0, max:1, palette:['white','red']}, 'NDVI Tau - Change');
 
 // Export rasters
-
 Export.image.toAsset({
-  image: changeClipped,
-  description: 'Land_cover_change_1990_2023_30m',
-  assetId: 'path/',
+  image: change,
+  description: 'file_name',
+  assetId: 'path/to/asset',
   region: boundaries,
   scale: 30,
   maxPixels: 1e13,
@@ -62,8 +73,8 @@ Export.image.toAsset({
 });
 
 Export.image.toAsset({
-  image: noChangeMask,
-  description: 'LC_no_change_30m',
+  image: ndviNoChange,
+  description: 'NDVI_Tau_NoChange_30m',
   region: boundaries,
   scale: 30,
   maxPixels: 1e13,
@@ -71,26 +82,50 @@ Export.image.toAsset({
 });
 
 Export.image.toAsset({
-  image: changeMask,
-  description: 'LC_change_30m',
+  image: ndviChange,
+  description: 'NDVI_Tau_Change_30m',
   region: boundaries,
   scale: 30,
   maxPixels: 1e13,
   crs: 'EPSG:32631'
 });
 
-// Calculate change per land cover class and export csv
+// Pixel count & change ratio
+var changeCount = change.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: boundaries,
+  scale: 30,
+  maxPixels: 1e13
+}).get('change');
 
-var classes = ee.List.sequence(1, 21);
-var changePerClass = classes.map(function(c) {
+var totalCount = change.updateMask(maskNoData).reduceRegion({
+  reducer: ee.Reducer.count(),
+  geometry: boundaries,
+  scale: 30,
+  maxPixels: 1e13
+}).get('change');
+
+var noChangeCount = ee.Number(totalCount).subtract(ee.Number(changeCount));
+var ratioChange = ee.Number(changeCount).divide(ee.Number(totalCount)).multiply(100);
+
+print('Changed pixels =', changeCount);
+print('Unchanged pixels =', noChangeCount);
+print('Total pixels =', totalCount);
+print('Land cover change ratio (%) =', ratioChange.format('%.2f'));
+
+// Change perland cover class
+var changeMask = lc23.neq(lc90);
+
+// Compute per-class change
+var changePerClass = ndviClasses.map(function(c) {
   c = ee.Number(c);
-  var classMask = lc90.eq(c).and(changeClipped.eq(1));
+  var classMask = lc90.eq(c).and(changeMask);
   var count = classMask.reduceRegion({
     reducer: ee.Reducer.sum(),
     geometry: boundaries,
     scale: 30,
     maxPixels: 1e13
-  }).get('b1');
+  }).get('lc90');
   
   return ee.Feature(null, {
     'class_1990': c,
@@ -98,11 +133,47 @@ var changePerClass = classes.map(function(c) {
   });
 });
 
+// Convert to FeatureCollection
 var changeFC = ee.FeatureCollection(changePerClass);
 
+// Add total
+var changeCount = ee.Number(change.reduceRegion({
+  reducer: ee.Reducer.sum(),
+  geometry: boundaries,
+  scale: 30,
+  maxPixels: 1e13
+}).get('change'));
+
+var totalCount = ee.Number(change.updateMask(maskNoData).reduceRegion({
+  reducer: ee.Reducer.count(),
+  geometry: boundaries,
+  scale: 30,
+  maxPixels: 1e13
+}).get('change'));
+
+var noChangeCount = totalCount.subtract(changeCount);
+
+// Create a summary Feature
+var summaryFeature = ee.Feature(null, {
+  'class_1990': 'TOTAL',
+  'changed_pixels': changeCount,
+  'no_change_pixels': noChangeCount,
+  'total_pixels': totalCount
+});
+
+// Add summary row to the FeatureCollection
+changeFC = changeFC.map(function(f) {
+  // Add empty columns for consistency
+  return f.set('no_change_pixels', null)
+          .set('total_pixels', null);
+}).merge(ee.FeatureCollection([summaryFeature]));
+
+print('Change per NDVI-valid class + totals', changeFC);
+
+// Export CSV
 Export.table.toDrive({
   collection: changeFC,
-  description: 'LC_change_1990_class',
+  description: 'ZZZZZ',
   fileFormat: 'CSV'
 });
 
