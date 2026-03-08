@@ -1,5 +1,5 @@
 # Set working directory
-setwd("C:/Users/guilh/OneDrive/Documentos/PhD/Data/Climate/Sussex")
+setwd("PATH/TO/NC_FILES")
 
 # Load required libraries
 library(terra)
@@ -12,8 +12,8 @@ library(Kendall)
 library(trend)
 library(stringr)
 
-# Load Sussex shapefile
-sussex_shp <- st_read("Sussex_boundaries.shp")
+# Load AOI shapefile
+sussex_shp <- st_read("PATH/TO/AOI/.shp")
 sussex_vect <- vect(sussex_shp)
 
 # ------------------------------------- Temperature ----------------------------------------
@@ -301,3 +301,4 @@ rain_mean_sussex <- mean(rain_mean_sussex, na.rm = TRUE)
 blue_palette <- colorRampPalette(c("#deebf7", "#3182bd"))(20)  # light to dark blue
 plot(rain_mean_sussex, main = "Average Rainfall (1995-2024) - Sussex",
      col = blue_palette)
+
