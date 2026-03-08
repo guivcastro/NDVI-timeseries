@@ -5,7 +5,7 @@ library(FSA)
 library(tidyr)      
 
 # Loading data
-input_dir <- "C:/Users/guilh/OneDrive/Documentos/PhD/Data/GEE/Timeseries/Landsat/NDVI/Landscape NDVI timeseries analysis/Land_cover_change_MK/Transition_LCC"
+input_dir <- "PATH/TO/LCC_TRANSITION_TIF_FILES"
 habitats <- c("Broadleaved", "Coniferous", "Arable", "Grassland", "Heathland")
 
 # Continuous color function
@@ -21,7 +21,7 @@ for(i in 1:5){
    r <- rast(fp)
    vals <- values(r, na.rm=TRUE)
    if(length(vals) > 1){
-    d <- density(vals, from=-1, to=1, na.rm=TRUE, n=2048)  # smoother
+    d <- density(vals, from=-1, to=1, na.rm=TRUE, n=2048) 
     max_y <- max(max_y, d$y)
    }
   }
@@ -30,7 +30,7 @@ for(i in 1:5){
 if(max_y == 0) max_y <- 1
 
 # Set up plotting layout
-par(mfrow=c(5,5), mar=c(2,2,2,1), oma=c(4,6,2,2))  # more left margin for row labels
+par(mfrow=c(5,5), mar=c(2,2,2,1), oma=c(4,6,2,2)) 
 
 # Plot each panel
 for(i in 1:5){
@@ -67,7 +67,7 @@ for(i in 1:5){
              border=NA)
     }
     
-    # Mean line (thicker dashed)
+    # Mean line
     abline(v=mean_val, lty=2, lwd=2)
     
    } else {
@@ -89,7 +89,7 @@ for(i in 1:5){
    mtext(habitats[j], side=3, line=0.5, cex=1.3)
   }
   
-  # Row labels (left column, shifted left)
+  # Row labels
   if(j==1){
    mtext(habitats[i], side=2, line=3, cex=1.3, adj=1)
   }
@@ -392,11 +392,12 @@ legend("bottomleft",
        bty="n")
 
 # Export tif
-out_file <- file.path(input_dir, "LandCover_Change_Binary.tif")
+out_file <- file.path(input_dir, "Land_cover_change_map.tif")
 
 # Write raster
 writeRaster(binary_change,
             out_file,
             overwrite = TRUE,
-            datatype = "INT1U",      # efficient for 0/1 data
+            datatype = "INT1U",      
             gdal = c("COMPRESS=LZW"))
+
